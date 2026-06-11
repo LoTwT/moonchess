@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref, watch } from "vue"
 import type { Player, ReadonlyGameState } from "../../utils/moonchess/game"
 
 const props = defineProps<{
@@ -18,6 +18,52 @@ const oldestCells = computed(() => {
       .map((queue) => queue[0]?.cell)
       .filter((cell): cell is number => typeof cell === "number"),
   )
+})
+
+// 月落 moonfall: 引擎一次性把第 4 颗落子 + 移除最早那颗，被移除的月在棋盘上已消失，
+// 这里用一层瞬时 overlay 把"那颗最早的月"补回原格做西沉/亏蚀动效。
+interface FallingMoon {
+  key: string
+  cell: number
+  player: Player
+}
+const falling = ref<FallingMoon[]>([])
+
+watch(
+  () => props.state.lastMove,
+  (move) => {
+    const removed = move?.removed
+    if (!removed) return
+    const key = `${removed.id}-${props.state.turn}`
+    falling.value = [...falling.value, { key, cell: removed.cell, player: removed.player }]
+  },
+)
+
+function endFall(key: string) {
+  falling.value = falling.value.filter((m) => m.key !== key)
+}
+
+function cellPos(cell: number) {
+  return { gridColumn: (cell % 3) + 1, gridRow: Math.floor(cell / 3) + 1 }
+}
+
+// 胜线连线：从首格中心到末格中心，画一条发光线（高对比，不靠模糊）。
+const winLine = computed(() => {
+  const line = props.state.winningLine
+  if (!line || line.length < 2) return null
+  const first = line[0]!
+  const last = line[line.length - 1]!
+  const center = (i: number) => ({
+    x: ((i % 3) + 0.5) * (100 / 3),
+    y: (Math.floor(i / 3) + 0.5) * (100 / 3),
+  })
+  const a = center(first)
+  const b = center(last)
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len = Math.sqrt(dx * dx + dy * dy)
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI
+  return { left: `${a.x}%`, top: `${a.y}%`, width: `${len}%`, angle: `${angle}deg` }
 })
 
 function cellLabel(index: number) {
@@ -69,13 +115,40 @@ function cellLabel(index: number) {
           aria-hidden="true"
         />
       </button>
+
+      <!-- 月落瞬时层：被 FIFO 移除的月在原格西沉/亏蚀淡出 -->
+      <div class="fall-layer" aria-hidden="true">
+        <span
+          v-for="moon in falling"
+          :key="moon.key"
+          class="moon-piece is-falling"
+          :class="moon.player"
+          :style="cellPos(moon.cell)"
+          @animationend="endFall(moon.key)"
+        >
+          <span class="wane" />
+        </span>
+      </div>
+
+      <!-- 胜线发光连线 -->
+      <div
+        v-if="winLine"
+        class="win-line"
+        aria-hidden="true"
+        :style="{
+          left: winLine.left,
+          top: winLine.top,
+          width: winLine.width,
+          '--angle': winLine.angle,
+        }"
+      />
     </div>
   </div>
 </template>
 
 <style scoped>
 .board-shell {
-  width: min(82vw, 520px);
+  width: min(82vw, 520px, 56vh);
   aspect-ratio: 1;
   padding: clamp(14px, 3vw, 24px);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -186,9 +259,106 @@ function cellLabel(index: number) {
   }
 }
 
+/* 月落瞬时层 */
+.fall-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.moon-piece.is-falling {
+  place-self: center;
+  animation: moonfall 520ms cubic-bezier(0.4, 0, 0.7, 1) forwards;
+}
+
+/* 亏蚀：一道阴影从一侧吃过月面（用 opacity，GPU 友好、零 reflow） */
+.moon-piece.is-falling .wane {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(105deg, transparent 38%, rgba(4, 6, 16, 0.82) 64%);
+  opacity: 0;
+  animation: wane 520ms ease-in forwards;
+}
+
+@keyframes moonfall {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.86);
+  }
+}
+
+@keyframes wane {
+  0% {
+    opacity: 0;
+  }
+  60% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 胜线发光连线 */
+.win-line {
+  position: absolute;
+  height: 4px;
+  transform-origin: 0 50%;
+  transform: translateY(-50%) rotate(var(--angle));
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255, 230, 173, 0), rgba(255, 230, 173, 0.95) 18%, rgba(255, 247, 227, 1) 50%, rgba(255, 230, 173, 0.95) 82%, rgba(255, 230, 173, 0));
+  box-shadow: 0 0 16px 3px rgba(255, 207, 115, 0.7);
+  pointer-events: none;
+  z-index: 3;
+  animation: win-line 520ms ease-out both;
+}
+
+@keyframes win-line {
+  0% {
+    opacity: 0;
+    transform: translateY(-50%) rotate(var(--angle)) scaleX(0.2);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-50%) rotate(var(--angle)) scaleX(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .moon-piece {
     animation-duration: 1ms;
+  }
+
+  /* 月落降级：不下沉、不亏蚀动画，仅快速淡出；哪颗要走已由 is-oldest 虚环提前标清，状态不丢 */
+  .moon-piece.is-falling {
+    animation: moonfall-rm 140ms linear forwards;
+  }
+
+  .moon-piece.is-falling .wane {
+    animation: none;
+    opacity: 0;
+  }
+
+  .win-line {
+    animation-duration: 1ms;
+  }
+
+  @keyframes moonfall-rm {
+    to {
+      opacity: 0;
+    }
   }
 }
 </style>
