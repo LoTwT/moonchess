@@ -6,6 +6,27 @@ import { useMoonChess } from "../../composables/useMoonChess"
 
 const started = shallowRef(false)
 
+// 自制夜空星点：确定性 seeded RNG，SSR 与客户端一致（无 hydration mismatch）；非游戏美术。
+function mulberry32(seed: number) {
+  return () => {
+    seed |= 0
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+const stars = (() => {
+  const rand = mulberry32(0x4d6f6f6e)
+  return Array.from({ length: 56 }, () => ({
+    left: `${(rand() * 100).toFixed(2)}%`,
+    top: `${(rand() * 76).toFixed(2)}%`,
+    size: `${(rand() * 1.6 + 0.6).toFixed(2)}px`,
+    delay: `${(rand() * 6).toFixed(2)}s`,
+    dim: (rand() * 0.45 + 0.25).toFixed(2),
+  }))
+})()
+
 const {
   state,
   playerLabels,
@@ -38,6 +59,15 @@ function restartGame() {
 
 <template>
   <main class="moon-shell">
+    <div class="starfield" aria-hidden="true">
+      <span
+        v-for="(s, i) in stars"
+        :key="i"
+        class="star"
+        :style="{ left: s.left, top: s.top, width: s.size, height: s.size, animationDelay: s.delay, '--dim': s.dim }"
+      />
+    </div>
+
     <section class="moon-hero" aria-labelledby="moon-title">
       <p class="moon-kicker">Moon Chess</p>
       <h1 id="moon-title" class="moon-title">
@@ -74,15 +104,48 @@ function restartGame() {
 
 <style scoped>
 .moon-shell {
+  position: relative;
   min-height: 100svh;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 24px;
-  padding: 32px clamp(18px, 5vw, 64px);
+  gap: 16px;
+  padding: 22px clamp(18px, 5vw, 64px) 18px;
   color: #eaf0ff;
   background:
     radial-gradient(circle at 50% 0%, rgba(255, 230, 173, 0.14), transparent 34%),
     radial-gradient(120% 90% at 50% 8%, #1a2348 0%, #0c1230 42%, #060814 78%, #03040b 100%);
+  overflow: hidden;
+}
+
+.starfield {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.star {
+  position: absolute;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: var(--dim, 0.4);
+  animation: star-tw 6s ease-in-out infinite;
+}
+
+@keyframes star-tw {
+  0%,
+  100% {
+    opacity: calc(var(--dim, 0.4) * 0.4);
+  }
+  50% {
+    opacity: var(--dim, 0.4);
+  }
+}
+
+.moon-hero,
+.moon-game {
+  position: relative;
+  z-index: 1;
 }
 
 .moon-hero {
@@ -142,5 +205,11 @@ function restartGame() {
   gap: 20px;
   align-content: center;
   justify-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star {
+    animation: none;
+  }
 }
 </style>
